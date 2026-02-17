@@ -33,12 +33,15 @@ import (
 var ips = sync.Map{}
 
 type history struct {
-	Ip      string  // ip
-	HasInfo bool    // 是否请求过IP地址信息
-	Country string  // 国家
-	Region  string  // 省
-	City    string  // 城市
-	List    []int64 // 访问时间列表
+	Ip       string  // ip
+	HasInfo  bool    // 是否请求过IP地址信息
+	Country  string  // 国家
+	Region   string  // 省
+	City     string  // 城市
+	Lat      float64 // 纬度 (新增)
+	Lon      float64 // 经度 (新增)
+	List     []int64 // 访问时间列表
+	LastTime int64   // 最后访问时间戳 (新增)
 }
 
 func (h *history) Init(ip string) {
@@ -46,7 +49,9 @@ func (h *history) Init(ip string) {
 }
 
 func (h *history) Add() {
-	h.List = append(h.List, time.Now().Unix())
+	now := time.Now().Unix()
+	h.List = append(h.List, now)
+	h.LastTime = now // 更新最后访问时间
 }
 
 func (h *history) Count(interval int64) (count int) {
@@ -108,4 +113,15 @@ func getIpHistory(ip string) (h *history) {
 func delIpHistory(ip string, port int) {
 	key := fmt.Sprintf("%s:%d", ip, port)
 	ips.Delete(key)
+}
+
+// GetAllIPStats 返回所有 IP 访问统计（供 Web API 使用）
+func GetAllIPStats() []*history {
+	var stats []*history
+	ips.Range(func(k, v interface{}) bool {
+		h := v.(*history)
+		stats = append(stats, h)
+		return true
+	})
+	return stats
 }

@@ -1,13 +1,15 @@
 # frps日志文件
-frps_log: ./log/frps.log
+frps_log: /usr/local/frp/log/frps.20260215-000000.log
 
 # 输出日志目录
-logs: ./tlog/
+logs: /home/ubuntu/github/frptables/logs/
 
 # frps 名字端口对应配置
 name_port:
-  "S0-SSH": 5322
-  "家里电脑": 5355
+  "nas-win-rdp-tcp": 30626
+  "nas-win-rdp-udp": 30626
+  "tcp-pc-rdp": 30627
+  "ucp-pc-rdp": 30627
 
 # 启用防火墙类型 iptables / firewall / md (Microsoft Defender)
 tables_type: iptables
@@ -16,40 +18,26 @@ tables_type: iptables
 allow_ip:
   - 127.0.0.1
 
-# 端口白名单
-allow_port:
-  - 8080
-  - 5443
+allow_port: []
 
-# 规则访问
 rules:
-
-  # 按数组顺序来，匹配到了就按匹配的规则执行，跳过此规则。
-  # 地区以 https://ip.zengwu.com.cn/?ip= 查询的结果为准
-  # 端口: -1 所有端口
-  # time: 时间区间
-  # count: 访问次数，-1不限，0限制。其他为 time时间内访问count次，超出频率就限制
-
-  - # 中国浙江杭州IP允许
-    port: -1
-    country: 中国
-    regionName: 浙江
-    city: 杭州
-    time: 600
-    count: 100
-
-  - # 中国地区IP 10分钟3次
-    port: -1
-    country: 中国
-    regionName:
-    city:
-    time: 600
+  - port: 30626
+    country: ""
+    regionName: ""
+    city: ""
+    time: 60
+    count: 5
+  - port: 30627
+    country: ""
+    regionName: ""
+    city: ""
+    time: 60
+    count: 5
+  - port: -1
+    country: ""
+    regionName: ""
+    city: ""
+    time: 60
     count: 10
 
-  - # 其他地区IP禁止
-    port: -1
-    country:
-    regionName:
-    city:
-    time: 1
-    count: 0
+ipinfo: '[{"enable":true,"name":"ipapi","url":"http://ip-api.com/json/{ip}?lang=zh-CN","field":{"country":"country","regionName":"regionName","city":"city","lat":"lat","lon":"lon"}}]'

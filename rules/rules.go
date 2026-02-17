@@ -25,11 +25,14 @@ package rules
 import (
 	"encoding/json"
 	"fmt"
+	"io"
+	"net/http"
+	"sync"
+	"time"
+
 	"github.com/zngw/frptables/config"
 	"github.com/zngw/frptables/util"
 	"github.com/zngw/golib/log"
-	"io"
-	"net/http"
 )
 
 // 拦截IP-端口，因为验证ip有时间差，攻击频率太高会导致防火墙重复添加。
@@ -37,6 +40,41 @@ var RefuseMap = make(map[string]bool)
 
 func Init() {
 	rateInit()
+}
+
+// BlockedInfo 拦截记录信息
+type BlockedInfo struct {
+	IP        string  `json:"ip"`
+	Port      int     `json:"port"`
+	Name      string  `json:"name"`
+	Country   string  `json:"country"`
+	Region    string  `json:"region"`
+	City      string  `json:"city"`
+	Lat       float64 `json:"lat"`
+	Lon       float64 `json:"lon"`
+	BlockTime int64   `json:"block_time"`
+}
+
+var BlockedList = make([]*BlockedInfo, 0) // 拦截历史列表
+var blockedMutex = sync.RWMutex{}
+
+// GetBlockedList 获取拦截记录列表（供 API 使用）
+func GetBlockedList() []*BlockedInfo {
+	blockedMutex.RLock()
+	defer blockedMutex.RUnlock()
+
+	// 返回副本避免竞态
+	result := make([]*BlockedInfo, len(BlockedList))
+	copy(result, BlockedList)
+	return result
+}
+
+// IsIPBlocked 检查 IP 是否已被拦截
+func IsIPBlocked(ip string) bool {
+	if _, ok := RefuseMap[ip]; ok {
+		return true
+	}
+	return false
 }
 
 // ip规则判断
@@ -228,4 +266,104 @@ func refuse(ip, name string, port int) {
 	if result != "" {
 		log.Trace("sys", result)
 	}
+
+	// 记录拦截信息
+	recordBlockedIP(ip, name, port)
+}
+
+// recordBlockedIP 记录被拦截的 IP 信息
+func recordBlockedIP(ip, name string, port int) {
+	// 获取 IP 的地理位置信息
+	h := getIpHistory(ip)
+
+	// 获取经纬度
+	lat, lon := h.Lat, h.Lon
+	if lat == 0 && lon == 0 {
+		lat, lon, _ = GetGeoInfo(ip)
+	}
+
+	blockedMutex.Lock()
+	defer blockedMutex.Unlock()
+
+	BlockedList = append(BlockedList, &BlockedInfo{
+		IP:        ip,
+		Port:      port,
+		Name:      name,
+		Country:   h.Country,
+		Region:    h.Region,
+		City:      h.City,
+		Lat:       lat,
+		Lon:       lon,
+		BlockTime: time.Now().Unix(),
+	})
+}
+
+// IPStatsResponse IP 统计响应结构
+type IPStatsResponse struct {
+	IP        string  `json:"ip"`
+	Country   string  `json:"country"`
+	Region    string  `json:"region"`
+	City      string  `json:"city"`
+	Lat       float64 `json:"lat"`
+	Lon       float64 `json:"lon"`
+	Count     int     `json:"count"`
+	LastTime  int64   `json:"last_time"`
+	IsBlocked bool    `json:"is_blocked"`
+}
+
+// HandleStats 处理 /api/stats 请求
+func HandleStats(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+
+	// 获取活跃的 IP 访问记录
+	stats := GetAllIPStats()
+	response := make([]IPStatsResponse, 0, len(stats))
+
+	// 用于去重
+	addedIPs := make(map[string]bool)
+
+	for _, h := range stats {
+		// 确保有地理坐标
+		EnrichHistoryWithGeo(h)
+
+		response = append(response, IPStatsResponse{
+			IP:        h.Ip,
+			Country:   h.Country,
+			Region:    h.Region,
+			City:      h.City,
+			Lat:       h.Lat,
+			Lon:       h.Lon,
+			Count:     len(h.List),
+			LastTime:  h.LastTime,
+			IsBlocked: IsIPBlocked(h.Ip),
+		})
+		addedIPs[h.Ip] = true
+	}
+
+	// 合并被拦截的 IP（如果尚未包含）
+	blocked := GetBlockedList()
+	for _, b := range blocked {
+		if addedIPs[b.IP] {
+			continue // 已存在，跳过
+		}
+		response = append(response, IPStatsResponse{
+			IP:        b.IP,
+			Country:   b.Country,
+			Region:    b.Region,
+			City:      b.City,
+			Lat:       b.Lat,
+			Lon:       b.Lon,
+			Count:     1,
+			LastTime:  b.BlockTime,
+			IsBlocked: true,
+		})
+	}
+
+	json.NewEncoder(w).Encode(response)
+}
+
+// HandleBlocked 处理 /api/blocked 请求
+func HandleBlocked(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(GetBlockedList())
 }

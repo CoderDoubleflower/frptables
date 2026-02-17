@@ -1,0 +1,688 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>FRP 访问监控</title>
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background: #f5f5f5; }
+        .header { background: #1a1a2e; color: white; padding: 15px 20px; display: flex; justify-content: space-between; align-items: center; }
+        .header h1 { font-size: 20px; }
+        .stats { display: flex; gap: 20px; font-size: 14px; }
+        .stat-item { background: rgba(255,255,255,0.1); padding: 5px 15px; border-radius: 4px; }
+        .container { display: flex; height: calc(100vh - 60px); }
+        .sidebar { width: 380px; background: white; border-right: 1px solid #ddd; overflow-y: auto; }
+        .tab-buttons { display: flex; border-bottom: 1px solid #ddd; }
+        .tab-btn { flex: 1; padding: 12px; border: none; background: #f8f8f8; cursor: pointer; font-size: 13px; }
+        .tab-btn.active { background: white; border-bottom: 2px solid #1a1a2e; }
+        .tab-content { padding: 15px; display: none; }
+        .tab-content.active { display: block; }
+        .map-container { flex: 1; position: relative; }
+        #map { width: 100%; height: 100%; background: #1a1a2e; }
+        .btn { padding: 8px 16px; background: #1a1a2e; color: white; border: none; border-radius: 4px; cursor: pointer; font-size: 12px; }
+        .btn:hover { background: #2a2a4e; }
+        .btn-sm { padding: 4px 8px; font-size: 11px; }
+        .btn-danger { background: #e74c3c; }
+        .btn-danger:hover { background: #c0392b; }
+        .btn-success { background: #27ae60; }
+        .btn-success:hover { background: #219a52; }
+        .ip-list { margin-top: 10px; max-height: 400px; overflow-y: auto; }
+        .ip-item { padding: 8px; border-bottom: 1px solid #eee; font-size: 12px; }
+        .ip-item.blocked { border-left: 3px solid #e74c3c; }
+        .ip-item.normal { border-left: 3px solid #3498db; }
+        .legend { position: absolute; bottom: 20px; right: 20px; background: white; padding: 12px; border-radius: 4px; box-shadow: 0 2px 8px rgba(0,0,0,0.15); z-index: 1000; max-width: 200px; }
+        .legend-title { font-weight: bold; margin-bottom: 8px; font-size: 13px; border-bottom: 1px solid #eee; padding-bottom: 5px; }
+        .legend-item { display: flex; align-items: center; gap: 8px; margin: 5px 0; font-size: 11px; }
+        .legend-color { width: 14px; height: 14px; border-radius: 50%; border: 2px solid #fff; box-shadow: 0 0 2px rgba(0,0,0,0.3); }
+        .stats-section { margin-bottom: 20px; padding-bottom: 15px; border-bottom: 1px solid #eee; }
+        .stats-section:last-child { border-bottom: none; }
+        .stats-section h4 { font-size: 14px; margin-bottom: 10px; color: #333; display: flex; align-items: center; gap: 8px; }
+        .region-item { display: flex; align-items: center; padding: 6px 8px; border-bottom: 1px solid #f0f0f0; font-size: 12px; }
+        .region-item:last-child { border-bottom: none; }
+        .region-rank { width: 20px; height: 20px; border-radius: 50%; display: flex; align-items: center; justify-content: center; color: white; font-weight: bold; font-size: 10px; margin-right: 8px; flex-shrink: 0; }
+        .region-name { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+        .region-count { font-weight: bold; color: #666; margin-right: 8px; }
+        .region-bar { width: 60px; height: 6px; background: #eee; border-radius: 3px; overflow: hidden; }
+        .region-bar-inner { height: 100%; border-radius: 3px; transition: width 0.3s; }
+        .loading { text-align: center; padding: 20px; color: #666; }
+
+        /* 配置页面样式 */
+        .config-section { margin-bottom: 20px; padding: 12px; background: #f9f9f9; border-radius: 6px; }
+        .config-section h5 { font-size: 13px; margin-bottom: 10px; color: #1a1a2e; display: flex; align-items: center; gap: 6px; }
+        .config-item { display: flex; align-items: center; margin-bottom: 8px; font-size: 12px; }
+        .config-item label { width: 80px; color: #666; flex-shrink: 0; }
+        .config-item input, .config-item select { flex: 1; padding: 6px 8px; border: 1px solid #ddd; border-radius: 4px; font-size: 12px; }
+        .config-item input:focus, .config-item select:focus { outline: none; border-color: #1a1a2e; }
+        .list-item { display: flex; align-items: center; padding: 6px 8px; background: white; border: 1px solid #e0e0e0; border-radius: 4px; margin-bottom: 6px; font-size: 12px; }
+        .list-item-content { flex: 1; }
+        .list-item-actions { display: flex; gap: 4px; }
+        .add-form { display: flex; gap: 6px; margin-top: 8px; }
+        .add-form input { flex: 1; padding: 6px 8px; border: 1px solid #ddd; border-radius: 4px; font-size: 12px; }
+        .rule-item { background: white; border: 1px solid #e0e0e0; border-radius: 6px; padding: 10px; margin-bottom: 8px; }
+        .rule-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px; }
+        .rule-title { font-weight: bold; font-size: 12px; color: #1a1a2e; }
+        .rule-fields { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; font-size: 11px; }
+        .rule-field { display: flex; flex-direction: column; }
+        .rule-field label { color: #999; font-size: 10px; margin-bottom: 2px; }
+        .rule-field input, .rule-field select { padding: 4px 6px; border: 1px solid #ddd; border-radius: 3px; font-size: 11px; }
+        .rule-field-full { grid-column: 1 / -1; }
+        .config-actions { display: flex; gap: 10px; margin-top: 15px; padding-top: 15px; border-top: 1px solid #eee; }
+        .config-status { margin-top: 10px; font-size: 12px; padding: 8px; border-radius: 4px; }
+        .config-status.success { background: #d4edda; color: #155724; }
+        .config-status.error { background: #f8d7da; color: #721c24; }
+        .empty-hint { color: #999; font-size: 11px; text-align: center; padding: 10px; }
+    </style>
+</head>
+<body>
+    <div class="header">
+        <h1>FRP 访问监控面板</h1>
+        <div class="stats">
+            <div class="stat-item">总访问 IP: <strong id="total-ips">-</strong></div>
+            <div class="stat-item">已拦截: <strong id="blocked-count">-</strong></div>
+            <div class="stat-item">今日访问: <strong id="today-count">-</strong></div>
+        </div>
+    </div>
+
+    <div class="container">
+        <div class="sidebar">
+            <div class="tab-buttons">
+                <button class="tab-btn active" onclick="switchTab('ips', event)">IP 列表</button>
+                <button class="tab-btn" onclick="switchTab('countries', event)">国家统计</button>
+                <button class="tab-btn" onclick="switchTab('config', event)">配置</button>
+            </div>
+
+            <div id="tab-ips" class="tab-content active">
+                <h3 style="font-size: 14px; margin-bottom: 10px;">访问记录</h3>
+                <div id="ip-list" class="ip-list">加载中...</div>
+            </div>
+
+            <div id="tab-countries" class="tab-content">
+                <div class="stats-section">
+                    <h4>🇨🇳 中国省份访问排名</h4>
+                    <div id="china-region-list">加载中...</div>
+                </div>
+                <div class="stats-section">
+                    <h4>🌍 全球国家/地区排名</h4>
+                    <div id="country-list">加载中...</div>
+                </div>
+            </div>
+
+            <div id="tab-config" class="tab-content">
+                <!-- 基本设置 -->
+                <div class="config-section">
+                    <h5>⚙️ 基本设置</h5>
+                    <div class="config-item">
+                        <label>日志路径</label>
+                        <input type="text" id="cfg-frps-log" placeholder="/path/to/frps.log">
+                    </div>
+                    <div class="config-item">
+                        <label>防火墙类型</label>
+                        <select id="cfg-tables-type">
+                            <option value="iptables">iptables (Linux)</option>
+                            <option value="firewall">firewalld (Linux)</option>
+                            <option value="md">Microsoft Defender (Windows)</option>
+                        </select>
+                    </div>
+                </div>
+
+                <!-- 代理端口映射 -->
+                <div class="config-section">
+                    <h5>🔌 代理端口映射</h5>
+                    <div id="name-port-list"></div>
+                    <div class="add-form">
+                        <input type="text" id="new-proxy-name" placeholder="代理名称">
+                        <input type="number" id="new-proxy-port" placeholder="端口" style="width:80px;flex:none;">
+                        <button class="btn btn-sm btn-success" onclick="addNamePort()">添加</button>
+                    </div>
+                </div>
+
+                <!-- IP 白名单 -->
+                <div class="config-section">
+                    <h5>🛡️ IP 白名单</h5>
+                    <div id="allow-ip-list"></div>
+                    <div class="add-form">
+                        <input type="text" id="new-allow-ip" placeholder="输入 IP 地址">
+                        <button class="btn btn-sm btn-success" onclick="addAllowIp()">添加</button>
+                    </div>
+                </div>
+
+                <!-- 端口白名单 -->
+                <div class="config-section">
+                    <h5>🔓 端口白名单</h5>
+                    <div id="allow-port-list"></div>
+                    <div class="add-form">
+                        <input type="number" id="new-allow-port" placeholder="端口号">
+                        <button class="btn btn-sm btn-success" onclick="addAllowPort()">添加</button>
+                    </div>
+                </div>
+
+                <!-- 访问规则 -->
+                <div class="config-section">
+                    <h5>📋 访问规则 <span style="font-weight:normal;color:#999;font-size:11px;">(按顺序匹配)</span></h5>
+                    <div id="rules-list"></div>
+                    <button class="btn btn-sm btn-success" onclick="addRule()" style="width:100%;margin-top:8px;">+ 添加规则</button>
+                </div>
+
+                <!-- 操作按钮 -->
+                <div class="config-actions">
+                    <button class="btn" onclick="saveConfig()" style="flex:1;">💾 保存配置</button>
+                    <button class="btn" onclick="loadConfig()" style="flex:1;background:#666;">🔄 重置</button>
+                </div>
+                <div id="config-status" class="config-status" style="display:none;"></div>
+            </div>
+        </div>
+
+        <div class="map-container">
+            <div id="map"></div>
+            <div class="legend">
+                <div class="legend-title">国家访问量排名</div>
+                <div id="legend-content">
+                    <div class="legend-item"><div class="legend-color" style="background: #e74c3c;"></div>第1名 (访问量最高)</div>
+                    <div class="legend-item"><div class="legend-color" style="background: #e67e22;"></div>第2名</div>
+                    <div class="legend-item"><div class="legend-color" style="background: #f1c40f;"></div>第3名</div>
+                    <div class="legend-item"><div class="legend-color" style="background: #27ae60;"></div>第4名</div>
+                    <div class="legend-item"><div class="legend-color" style="background: #3498db;"></div>第5名</div>
+                    <div class="legend-item"><div class="legend-color" style="background: #9b59b6;"></div>第6名</div>
+                    <div class="legend-item"><div class="legend-color" style="background: #95a5a6;"></div>其他</div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/js-yaml@4.1.0/dist/js-yaml.min.js"></script>
+    <script>
+        const COLOR_RANKS = [
+            { rank: 1, color: '#e74c3c', name: '第1名' },
+            { rank: 2, color: '#e67e22', name: '第2名' },
+            { rank: 3, color: '#f1c40f', name: '第3名' },
+            { rank: 4, color: '#27ae60', name: '第4名' },
+            { rank: 5, color: '#3498db', name: '第5名' },
+            { rank: 6, color: '#9b59b6', name: '第6名' },
+            { rank: 7, color: '#95a5a6', name: '其他' }
+        ];
+
+        const CHINA_REGION_COLORS = [
+            '#e74c3c', '#e67e22', '#f1c40f', '#27ae60', '#3498db',
+            '#9b59b6', '#1abc9c', '#e91e63', '#00bcd4', '#ff5722',
+            '#795548', '#607d8b', '#8bc34a', '#ffc107', '#03a9f4'
+        ];
+
+        const COUNTRY_NAME_MAP = {
+            '中国': 'China', '美国': 'United States of America', '日本': 'Japan', '韩国': 'South Korea',
+            '英国': 'United Kingdom', '法国': 'France', '德国': 'Germany', '俄罗斯': 'Russia',
+            '印度': 'India', '巴西': 'Brazil', '加拿大': 'Canada', '澳大利亚': 'Australia',
+            '意大利': 'Italy', '西班牙': 'Spain', '未知': null
+        };
+
+        // 配置数据
+        let configData = {};
+
+        // 初始化地图
+        const map = L.map('map', { center: [35, 105], zoom: 2, minZoom: 2, maxZoom: 10 });
+        L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png', {
+            attribution: '&copy; OpenStreetMap',
+            subdomains: 'abcd',
+            maxZoom: 19
+        }).addTo(map);
+
+        let geoJsonLayer = null;
+        let countryStatsCache = null;
+        let countryColorMap = {};
+
+        function switchTab(tab, evt) {
+            document.querySelectorAll('.tab-content').forEach(el => el.classList.remove('active'));
+            document.querySelectorAll('.tab-btn').forEach(el => el.classList.remove('active'));
+            document.getElementById('tab-' + tab).classList.add('active');
+            if (evt && evt.target) evt.target.classList.add('active');
+        }
+
+        function aggregateByCountry(data) {
+            const countryMap = new Map();
+            data.forEach(ip => {
+                const country = ip.country || '未知';
+                if (!countryMap.has(country)) {
+                    countryMap.set(country, { country, count: 0, ips: [], totalRequests: 0, blockedCount: 0 });
+                }
+                const stat = countryMap.get(country);
+                stat.count++;
+                stat.ips.push(ip.ip);
+                stat.totalRequests += ip.count;
+                if (ip.is_blocked) stat.blockedCount++;
+            });
+            const sorted = Array.from(countryMap.values()).sort((a, b) => b.totalRequests - a.totalRequests);
+            sorted.forEach((item, index) => {
+                item.rank = index + 1;
+                const colorInfo = COLOR_RANKS[Math.min(index, COLOR_RANKS.length - 1)];
+                item.color = colorInfo.color;
+                item.rankName = colorInfo.name;
+                countryColorMap[item.country] = item.color;
+                const englishName = COUNTRY_NAME_MAP[item.country];
+                if (englishName) countryColorMap[englishName] = item.color;
+            });
+            return sorted;
+        }
+
+        function aggregateChinaRegions(data) {
+            const regionMap = new Map();
+            const chinaIps = data.filter(ip => ip.country === '中国');
+            chinaIps.forEach(ip => {
+                let region = ip.region || '未知';
+                region = region.replace(/省|自治区|特别行政区|市$/g, '').trim();
+                if (!region) region = '未知';
+                if (!regionMap.has(region)) {
+                    regionMap.set(region, { region, count: 0, ips: [], totalRequests: 0, blockedCount: 0 });
+                }
+                const stat = regionMap.get(region);
+                stat.count++;
+                stat.ips.push(ip.ip);
+                stat.totalRequests += ip.count;
+                if (ip.is_blocked) stat.blockedCount++;
+            });
+            const sorted = Array.from(regionMap.values()).sort((a, b) => b.totalRequests - a.totalRequests);
+            const maxRequests = sorted.length > 0 ? sorted[0].totalRequests : 1;
+            sorted.forEach((item, index) => {
+                item.rank = index + 1;
+                item.color = CHINA_REGION_COLORS[Math.min(index, CHINA_REGION_COLORS.length - 1)];
+                item.percent = ((item.totalRequests / maxRequests) * 100).toFixed(0);
+            });
+            return sorted;
+        }
+
+        function getCountryStyle(feature) {
+            const countryName = feature.properties.name || feature.properties.ADMIN || feature.properties.name_long;
+            const color = countryColorMap[countryName] || 'transparent';
+            const hasData = color !== 'transparent';
+            return {
+                fillColor: color,
+                weight: hasData ? 2 : 1,
+                opacity: hasData ? 1 : 0.3,
+                color: hasData ? '#fff' : '#444',
+                fillOpacity: hasData ? 0.7 : 0.1
+            };
+        }
+
+        function highlightFeature(e) {
+            const layer = e.target;
+            layer.setStyle({ weight: 3, color: '#fff', fillOpacity: 0.9 });
+            layer.bringToFront();
+        }
+
+        function resetHighlight(e) {
+            geoJsonLayer.resetStyle(e.target);
+        }
+
+        function onEachFeature(feature, layer) {
+            const countryName = feature.properties.name || feature.properties.ADMIN || feature.properties.name_long;
+            let statInfo = '';
+            if (countryStatsCache) {
+                let stat = countryStatsCache.find(s => s.country === countryName);
+                if (!stat) {
+                    for (const [cnName, enName] of Object.entries(COUNTRY_NAME_MAP)) {
+                        if (enName === countryName && countryColorMap[cnName]) {
+                            stat = countryStatsCache.find(s => s.country === cnName);
+                            break;
+                        }
+                    }
+                }
+                if (stat) {
+                    statInfo = `<br><b style="color:${stat.color}">排名: 第${stat.rank}名</b><br>IP: ${stat.count}<br>访问: ${stat.totalRequests}次`;
+                }
+            }
+            const popupContent = `<b>${countryName}</b>${statInfo}`;
+            layer.on({
+                mouseover: highlightFeature,
+                mouseout: resetHighlight,
+                click: () => layer.bindPopup(popupContent).openPopup()
+            });
+            layer.bindTooltip(popupContent, { sticky: true, direction: 'top', offset: [0, -10] });
+        }
+
+        async function loadGeoJson() {
+            try {
+                const response = await fetch('https://raw.githubusercontent.com/datasets/geo-countries/master/data/countries.geojson');
+                const geoJsonData = await response.json();
+                geoJsonLayer = L.geoJSON(geoJsonData, { style: getCountryStyle, onEachFeature }).addTo(map);
+                return true;
+            } catch (err) {
+                console.error('加载地图失败:', err);
+                return false;
+            }
+        }
+
+        function updateMapColors() {
+            if (geoJsonLayer) geoJsonLayer.setStyle(getCountryStyle);
+        }
+
+        async function loadStats() {
+            try {
+                const resp = await fetch('/api/stats');
+                const data = await resp.json();
+                document.getElementById('total-ips').textContent = data.length;
+                const today = new Date().setHours(0, 0, 0, 0) / 1000;
+                document.getElementById('today-count').textContent = data.filter(ip => ip.last_time > today).length;
+                const countryStats = aggregateByCountry(data);
+                countryStatsCache = countryStats;
+                const chinaRegionStats = aggregateChinaRegions(data);
+                updateChinaRegionList(chinaRegionStats);
+                updateCountryList(countryStats, data.length);
+                updateMapColors();
+                const listEl = document.getElementById('ip-list');
+                listEl.innerHTML = '';
+                data.forEach(ip => {
+                    const country = ip.country || '未知';
+                    const countryStat = countryStats.find(s => s.country === country);
+                    const colorDot = countryStat ? `<span style="display:inline-block;width:8px;height:8px;border-radius:50%;background:${countryStat.color};margin-right:5px;"></span>` : '';
+                    const item = document.createElement('div');
+                    item.className = 'ip-item ' + (ip.is_blocked ? 'blocked' : 'normal');
+                    item.innerHTML = `
+                        <div>${colorDot}<strong>${ip.ip}</strong> ${ip.is_blocked ? '<span style="color:#e74c3c">[已拦截]</span>' : ''}</div>
+                        <div style="color:#666;font-size:11px;">${ip.country || '-'} ${ip.region || '-'} ${ip.city || '-'}</div>
+                        <div style="color:#999;font-size:10px;">访问 ${ip.count} 次</div>`;
+                    listEl.appendChild(item);
+                });
+            } catch (err) {
+                console.error('加载统计失败:', err);
+            }
+        }
+
+        function updateChinaRegionList(regionStats) {
+            const listEl = document.getElementById('china-region-list');
+            if (regionStats.length === 0) {
+                listEl.innerHTML = '<div class="empty-hint">暂无中国访问记录</div>';
+                return;
+            }
+            listEl.innerHTML = '';
+            regionStats.forEach(stat => {
+                const item = document.createElement('div');
+                item.className = 'region-item';
+                item.innerHTML = `
+                    <div class="region-rank" style="background:${stat.color};">${stat.rank}</div>
+                    <div class="region-name">${stat.region}</div>
+                    <div class="region-count">${stat.totalRequests}次</div>
+                    <div class="region-bar"><div class="region-bar-inner" style="width:${stat.percent}%;background:${stat.color};"></div></div>`;
+                listEl.appendChild(item);
+            });
+        }
+
+        function updateCountryList(countryStats, totalIPs) {
+            const listEl = document.getElementById('country-list');
+            listEl.innerHTML = '';
+            countryStats.forEach(stat => {
+                const percent = ((stat.count / totalIPs) * 100).toFixed(1);
+                const item = document.createElement('div');
+                item.className = 'region-item';
+                item.innerHTML = `
+                    <div class="region-rank" style="background:${stat.color};">${stat.rank}</div>
+                    <div class="region-name">${stat.country}</div>
+                    <div class="region-count">${stat.totalRequests}次</div>
+                    <div style="font-size:10px;color:#999;">${percent}%</div>`;
+                listEl.appendChild(item);
+            });
+        }
+
+        async function loadBlocked() {
+            try {
+                const resp = await fetch('/api/blocked');
+                const data = await resp.json();
+                document.getElementById('blocked-count').textContent = data.length;
+            } catch (err) {
+                console.error('加载拦截失败:', err);
+            }
+        }
+
+        // 配置管理函数
+        async function loadConfig() {
+            try {
+                const resp = await fetch('/api/config');
+                const text = await resp.text();
+                configData = jsyaml.load(text);
+                renderConfig();
+            } catch (err) {
+                console.error('加载配置失败:', err);
+            }
+        }
+
+        function renderConfig() {
+            // 基本设置
+            document.getElementById('cfg-frps-log').value = configData.frps_log || '';
+            document.getElementById('cfg-tables-type').value = configData.tables_type || 'iptables';
+
+            // 代理端口映射
+            renderNamePortList();
+
+            // IP 白名单
+            renderAllowIpList();
+
+            // 端口白名单
+            renderAllowPortList();
+
+            // 规则
+            renderRulesList();
+        }
+
+        function renderNamePortList() {
+            const listEl = document.getElementById('name-port-list');
+            const items = configData.name_port || {};
+            if (Object.keys(items).length === 0) {
+                listEl.innerHTML = '<div class="empty-hint">暂无映射</div>';
+                return;
+            }
+            listEl.innerHTML = '';
+            Object.entries(items).forEach(([name, port]) => {
+                const item = document.createElement('div');
+                item.className = 'list-item';
+                item.innerHTML = `
+                    <div class="list-item-content"><strong>${name}</strong> → 端口 ${port}</div>
+                    <div class="list-item-actions">
+                        <button class="btn btn-sm btn-danger" onclick="removeNamePort('${name}')">删除</button>
+                    </div>`;
+                listEl.appendChild(item);
+            });
+        }
+
+        function addNamePort() {
+            const name = document.getElementById('new-proxy-name').value.trim();
+            const port = parseInt(document.getElementById('new-proxy-port').value);
+            if (!name || !port) return alert('请填写代理名称和端口');
+            if (!configData.name_port) configData.name_port = {};
+            configData.name_port[name] = port;
+            document.getElementById('new-proxy-name').value = '';
+            document.getElementById('new-proxy-port').value = '';
+            renderNamePortList();
+        }
+
+        function removeNamePort(name) {
+            if (configData.name_port) delete configData.name_port[name];
+            renderNamePortList();
+        }
+
+        function renderAllowIpList() {
+            const listEl = document.getElementById('allow-ip-list');
+            const items = configData.allow_ip || [];
+            if (items.length === 0) {
+                listEl.innerHTML = '<div class="empty-hint">暂无白名单 IP</div>';
+                return;
+            }
+            listEl.innerHTML = '';
+            items.forEach((ip, index) => {
+                const item = document.createElement('div');
+                item.className = 'list-item';
+                item.innerHTML = `
+                    <div class="list-item-content">${ip}</div>
+                    <div class="list-item-actions">
+                        <button class="btn btn-sm btn-danger" onclick="removeAllowIp(${index})">删除</button>
+                    </div>`;
+                listEl.appendChild(item);
+            });
+        }
+
+        function addAllowIp() {
+            const ip = document.getElementById('new-allow-ip').value.trim();
+            if (!ip) return alert('请输入 IP 地址');
+            if (!configData.allow_ip) configData.allow_ip = [];
+            if (configData.allow_ip.includes(ip)) return alert('该 IP 已存在');
+            configData.allow_ip.push(ip);
+            document.getElementById('new-allow-ip').value = '';
+            renderAllowIpList();
+        }
+
+        function removeAllowIp(index) {
+            configData.allow_ip.splice(index, 1);
+            renderAllowIpList();
+        }
+
+        function renderAllowPortList() {
+            const listEl = document.getElementById('allow-port-list');
+            const items = configData.allow_port || [];
+            if (items.length === 0) {
+                listEl.innerHTML = '<div class="empty-hint">暂无白名单端口</div>';
+                return;
+            }
+            listEl.innerHTML = '';
+            items.forEach((port, index) => {
+                const item = document.createElement('div');
+                item.className = 'list-item';
+                item.innerHTML = `
+                    <div class="list-item-content">端口 ${port}</div>
+                    <div class="list-item-actions">
+                        <button class="btn btn-sm btn-danger" onclick="removeAllowPort(${index})">删除</button>
+                    </div>`;
+                listEl.appendChild(item);
+            });
+        }
+
+        function addAllowPort() {
+            const port = parseInt(document.getElementById('new-allow-port').value);
+            if (!port) return alert('请输入端口号');
+            if (!configData.allow_port) configData.allow_port = [];
+            if (configData.allow_port.includes(port)) return alert('该端口已存在');
+            configData.allow_port.push(port);
+            document.getElementById('new-allow-port').value = '';
+            renderAllowPortList();
+        }
+
+        function removeAllowPort(index) {
+            configData.allow_port.splice(index, 1);
+            renderAllowPortList();
+        }
+
+        function renderRulesList() {
+            const listEl = document.getElementById('rules-list');
+            const items = configData.rules || [];
+            if (items.length === 0) {
+                listEl.innerHTML = '<div class="empty-hint">暂无规则，点击下方添加</div>';
+                return;
+            }
+            listEl.innerHTML = '';
+            items.forEach((rule, index) => {
+                const item = document.createElement('div');
+                item.className = 'rule-item';
+                const portText = rule.port === -1 ? '所有端口' : `端口 ${rule.port}`;
+                const countText = rule.count === -1 ? '不限' : rule.count === 0 ? '全部拦截' : `>${rule.count}次`;
+                const timeText = rule.time ? `${rule.time}秒内` : '';
+                const location = [rule.country, rule.regionName, rule.city].filter(x => x).join(' / ') || '任意地区';
+
+                item.innerHTML = `
+                    <div class="rule-header">
+                        <div class="rule-title">#${index + 1} ${portText}</div>
+                        <button class="btn btn-sm btn-danger" onclick="removeRule(${index})">删除</button>
+                    </div>
+                    <div style="font-size:11px;color:#666;margin-bottom:8px;">
+                        📍 ${location} | ⏱️ ${timeText} ${countText}
+                    </div>
+                    <div class="rule-fields">
+                        <div class="rule-field">
+                            <label>端口 (-1=全部)</label>
+                            <input type="number" value="${rule.port}" onchange="updateRule(${index}, 'port', this.value)">
+                        </div>
+                        <div class="rule-field">
+                            <label>时间窗口(秒)</label>
+                            <input type="number" value="${rule.time || ''}" onchange="updateRule(${index}, 'time', this.value)">
+                        </div>
+                        <div class="rule-field">
+                            <label>阈值 (-1不限/0全拦)</label>
+                            <input type="number" value="${rule.count}" onchange="updateRule(${index}, 'count', this.value)">
+                        </div>
+                        <div class="rule-field">
+                            <label>国家</label>
+                            <input type="text" value="${rule.country || ''}" placeholder="留空=任意" onchange="updateRule(${index}, 'country', this.value)">
+                        </div>
+                        <div class="rule-field">
+                            <label>省份</label>
+                            <input type="text" value="${rule.regionName || ''}" placeholder="留空=任意" onchange="updateRule(${index}, 'regionName', this.value)">
+                        </div>
+                        <div class="rule-field">
+                            <label>城市</label>
+                            <input type="text" value="${rule.city || ''}" placeholder="留空=任意" onchange="updateRule(${index}, 'city', this.value)">
+                        </div>
+                    </div>`;
+                listEl.appendChild(item);
+            });
+        }
+
+        function addRule() {
+            if (!configData.rules) configData.rules = [];
+            configData.rules.push({ port: -1, country: '', regionName: '', city: '', time: 60, count: 10 });
+            renderRulesList();
+        }
+
+        function removeRule(index) {
+            configData.rules.splice(index, 1);
+            renderRulesList();
+        }
+
+        function updateRule(index, field, value) {
+            if (field === 'port' || field === 'time' || field === 'count') {
+                value = parseInt(value) || 0;
+            }
+            configData.rules[index][field] = value;
+        }
+
+        async function saveConfig() {
+            const statusEl = document.getElementById('config-status');
+            statusEl.style.display = 'block';
+            statusEl.className = 'config-status';
+            statusEl.textContent = '保存中...';
+            statusEl.style.background = '#fff3cd';
+            statusEl.style.color = '#856404';
+
+            // 更新基本设置
+            configData.frps_log = document.getElementById('cfg-frps-log').value;
+            configData.tables_type = document.getElementById('cfg-tables-type').value;
+
+            try {
+                const yaml = jsyaml.dump(configData, { indent: 2, lineWidth: -1 });
+                const resp = await fetch('/api/config', {
+                    method: 'POST',
+                    body: yaml
+                });
+
+                if (resp.ok) {
+                    statusEl.textContent = '✓ 保存成功，配置已生效';
+                    statusEl.className = 'config-status success';
+                } else {
+                    const err = await resp.text();
+                    statusEl.textContent = '✗ 保存失败: ' + err;
+                    statusEl.className = 'config-status error';
+                }
+            } catch (err) {
+                statusEl.textContent = '✗ 网络错误: ' + err.message;
+                statusEl.className = 'config-status error';
+            }
+        }
+
+        async function init() {
+            await loadGeoJson();
+            loadStats();
+            loadBlocked();
+            loadConfig();
+            setInterval(() => { loadStats(); loadBlocked(); }, 5000);
+        }
+
+        init();
+    </script>
+</body>
+</html>

@@ -36,7 +36,7 @@ import (
 )
 
 const key = "1ba5d2dd59cc478e"
-const url = "127.0.0.1:18055"
+const url = "0.0.0.0:50647"
 
 var cfgFile string
 var Cfg Conf

@@ -24,6 +24,7 @@ package main
 
 import (
 	"flag"
+	"fmt"
 	"github.com/hpcloud/tail"
 	"github.com/zngw/frptables/config"
 	"github.com/zngw/frptables/rules"
@@ -34,6 +35,13 @@ import (
 )
 
 func main() {
+	// 全局 panic 恢复
+	defer func() {
+		if r := recover(); r != nil {
+			fmt.Fprintf(os.Stderr, "panic recovered: %v\n", r)
+		}
+	}()
+
 	// 读取命令行配置文件参数
 	c := flag.String("c", "./config.yml", "默认配置为 config.yml")
 	s := flag.String("s", "", "默认配置为空")
@@ -66,21 +74,34 @@ func main() {
 		CallerSkip:      0,
 	}
 	log.Init(opt)
+
+	log.Trace("sys", "开始初始化规则")
 	// 初始化规则
 	rules.Init()
+	log.Trace("sys", "规则初始化完成")
+
+	log.Trace("sys", "开始初始化 Web 服务器")
+	// 初始化 Web 服务器
+	config.InitWebServer(rules.HandleStats, rules.HandleBlocked)
+	log.Trace("sys", "Web 服务器初始化完成")
 
 	// 启动用tail监听
 	frpLog, _ := filepath.Abs(config.Cfg.FrpsLog)
 	tails, err := tail.TailFile(frpLog, tail.Config{
 		ReOpen:    true,                                 // 重新打开
 		Follow:    true,                                 // 是否跟随
-		Location:  &tail.SeekInfo{Offset: 0, Whence: 2}, // 从文件的哪个地方开始读
+		Location:  &tail.SeekInfo{Offset: 0, Whence: 0}, // 从文件开头开始读
 		MustExist: false,                                // 文件不存在不报错
 		Poll:      true,
 	})
 
 	if err != nil {
 		log.Error("sys", "tail file failed, err:%v", err)
+		return
+	}
+
+	if tails == nil || tails.Lines == nil {
+		log.Error("sys", "tail lines is nil")
 		return
 	}
 

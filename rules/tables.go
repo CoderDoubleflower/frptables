@@ -22,7 +22,10 @@
 
 package rules
 
-import "github.com/zngw/golib/log"
+import (
+	"github.com/zngw/golib/log"
+	"github.com/zngw/zipinfo/ipinfo"
+)
 
 func Check(text string) {
 	err, ip, name, port := parse(text)
@@ -32,6 +35,25 @@ func Check(text string) {
 		}
 
 		return
+	}
+
+	// 记录 IP 访问历史（用于 Web 统计）
+	h := getIpHistory(ip)
+	h.Add()
+
+	// 获取 IP 地理位置信息（如果没有）
+	if !h.HasInfo {
+		ipErr, info := ipinfo.GetIpInfo(ip)
+		if ipErr == nil && info != nil {
+			h.HasInfo = true
+			h.Country = info.Country
+			h.Region = info.Region
+			h.City = info.City
+			// 获取经纬度
+			lat, lon, _ := GetGeoInfo(ip)
+			h.Lat = lat
+			h.Lon = lon
+		}
 	}
 
 	rules(ip, name, port)
