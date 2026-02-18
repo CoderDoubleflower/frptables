@@ -29,6 +29,8 @@ import (
 	"strings"
 )
 
+var tcpLinkRegex = regexp.MustCompile(`.* \[I\] \[.*\] \[.*\] \[(.*?)] get a user connection \[(.*?)]`)
+
 // 解析日志
 func parse(text string) (err error, ip, name string, port int) {
 	// 从frp日志中获取tcp连接信息
@@ -39,8 +41,7 @@ func parse(text string) (err error, ip, name string, port int) {
 	}
 
 	// 正则表达式获取转发名和请求ID
-	compileRegex := regexp.MustCompile("^* \\[I] \\[.*] \\[.*] \\[(.*?)] get a user connection \\[(.*?)]")
-	matchArr := compileRegex.FindStringSubmatch(text)
+	matchArr := tcpLinkRegex.FindStringSubmatch(text)
 
 	if len(matchArr) <= 2 {
 		err = fmt.Errorf("not tcp link")

@@ -24,7 +24,6 @@ package rules
 
 import (
 	"github.com/zngw/golib/log"
-	"github.com/zngw/zipinfo/ipinfo"
 )
 
 func Check(text string) {
@@ -43,13 +42,12 @@ func Check(text string) {
 
 	// 获取 IP 地理位置信息（如果没有）
 	if !h.HasInfo {
-		ipErr, info := ipinfo.GetIpInfo(ip)
-		if ipErr == nil && info != nil {
+		country, region, city, ok := lookupIPLocation(ip)
+		if ok {
 			h.HasInfo = true
-			h.Country = info.Country
-			h.Region = info.Region
-			h.City = info.City
-			// 获取经纬度
+			h.Country = country
+			h.Region = region
+			h.City = city
 			lat, lon, _ := GetGeoInfo(ip)
 			h.Lat = lat
 			h.Lon = lon

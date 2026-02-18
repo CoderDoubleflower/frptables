@@ -33,22 +33,40 @@ type GeoInfo struct {
 	Lat       float64 `json:"lat"`
 	Lon       float64 `json:"lon"`
 	QueryTime int64   `json:"query_time"`
+	Success   bool    `json:"success"`
 }
 
 var geoCache = sync.Map{} // ip -> *GeoInfo
 
+const (
+	geoCacheTTL        = 24 * time.Hour
+	geoFailureCacheTTL = 10 * time.Minute
+)
+
+var geoHTTPClient = &http.Client{Timeout: 4 * time.Second}
+
 // GetGeoInfo 获取 IP 地理坐标（带缓存）
 // 使用 ip-api.com 免费 API，限制每分钟 45 次
 func GetGeoInfo(ip string) (lat, lon float64, err error) {
+	now := time.Now().Unix()
+
 	// 检查缓存
 	if v, ok := geoCache.Load(ip); ok {
 		geo := v.(*GeoInfo)
-		return geo.Lat, geo.Lon, nil
+		ttl := int64(geoCacheTTL.Seconds())
+		if !geo.Success {
+			ttl = int64(geoFailureCacheTTL.Seconds())
+		}
+		if now-geo.QueryTime <= ttl {
+			return geo.Lat, geo.Lon, nil
+		}
+		geoCache.Delete(ip)
 	}
 
 	// 调用 ip-api.com
-	resp, err := http.Get("http://ip-api.com/json/" + ip + "?lang=zh-CN&fields=status,lat,lon")
+	resp, err := geoHTTPClient.Get("http://ip-api.com/json/" + ip + "?lang=zh-CN&fields=status,lat,lon")
 	if err != nil {
+		geoCache.Store(ip, &GeoInfo{QueryTime: now, Success: false})
 		return 0, 0, err
 	}
 	defer resp.Body.Close()
@@ -60,10 +78,12 @@ func GetGeoInfo(ip string) (lat, lon float64, err error) {
 	}
 
 	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		geoCache.Store(ip, &GeoInfo{QueryTime: now, Success: false})
 		return 0, 0, err
 	}
 
 	if result.Status != "success" {
+		geoCache.Store(ip, &GeoInfo{QueryTime: now, Success: false})
 		return 0, 0, nil // 返回 0,0 但不报错
 	}
 
@@ -71,7 +91,8 @@ func GetGeoInfo(ip string) (lat, lon float64, err error) {
 	geoCache.Store(ip, &GeoInfo{
 		Lat:       result.Lat,
 		Lon:       result.Lon,
-		QueryTime: time.Now().Unix(),
+		QueryTime: now,
+		Success:   true,
 	})
 
 	return result.Lat, result.Lon, nil

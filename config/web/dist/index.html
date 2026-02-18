@@ -231,6 +231,9 @@
         let geoJsonLayer = null;
         let countryStatsCache = null;
         let countryColorMap = {};
+        const STATS_POLL_INTERVAL_MS = 15000;
+        let statsLoading = false;
+        let pollTimer = null;
 
         function switchTab(tab, evt) {
             document.querySelectorAll('.tab-content').forEach(el => el.classList.remove('active'));
@@ -357,12 +360,15 @@
         }
 
         async function loadStats() {
+            if (statsLoading) return;
+            statsLoading = true;
             try {
                 const resp = await fetch('/api/stats');
                 const data = await resp.json();
                 document.getElementById('total-ips').textContent = data.length;
                 const today = new Date().setHours(0, 0, 0, 0) / 1000;
                 document.getElementById('today-count').textContent = data.filter(ip => ip.last_time > today).length;
+                document.getElementById('blocked-count').textContent = data.filter(ip => ip.is_blocked).length;
                 const countryStats = aggregateByCountry(data);
                 countryStatsCache = countryStats;
                 const chinaRegionStats = aggregateChinaRegions(data);
@@ -385,6 +391,8 @@
                 });
             } catch (err) {
                 console.error('加载统计失败:', err);
+            } finally {
+                statsLoading = false;
             }
         }
 
@@ -421,16 +429,6 @@
                     <div style="font-size:10px;color:#999;">${percent}%</div>`;
                 listEl.appendChild(item);
             });
-        }
-
-        async function loadBlocked() {
-            try {
-                const resp = await fetch('/api/blocked');
-                const data = await resp.json();
-                document.getElementById('blocked-count').textContent = data.length;
-            } catch (err) {
-                console.error('加载拦截失败:', err);
-            }
         }
 
         // 配置管理函数
@@ -674,12 +672,34 @@
             }
         }
 
+        function startPolling() {
+            if (pollTimer) return;
+            pollTimer = setInterval(loadStats, STATS_POLL_INTERVAL_MS);
+        }
+
+        function stopPolling() {
+            if (!pollTimer) return;
+            clearInterval(pollTimer);
+            pollTimer = null;
+        }
+
         async function init() {
             await loadGeoJson();
-            loadStats();
-            loadBlocked();
+            await loadStats();
             loadConfig();
-            setInterval(() => { loadStats(); loadBlocked(); }, 5000);
+
+            if (!document.hidden) {
+                startPolling();
+            }
+
+            document.addEventListener('visibilitychange', () => {
+                if (document.hidden) {
+                    stopPolling();
+                    return;
+                }
+                loadStats();
+                startPolling();
+            });
         }
 
         init();

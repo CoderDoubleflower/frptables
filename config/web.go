@@ -23,10 +23,15 @@
 package config
 
 import (
+	"crypto/sha1"
 	"embed"
+	"encoding/hex"
 	"io"
+	"io/fs"
 	"net/http"
 	"os"
+	"strings"
+	"sync"
 
 	"gopkg.in/yaml.v2"
 )
@@ -34,19 +39,40 @@ import (
 //go:embed web/dist/*
 var WebFS embed.FS
 
+type staticAsset struct {
+	Data        []byte
+	ContentType string
+	ETag        string
+	IsHTML      bool
+}
+
+var (
+	staticAssets     map[string]*staticAsset
+	staticAssetsOnce sync.Once
+)
+
 // InitWebServer 初始化 Web 服务和 API 路由
 // handlers 参数: statsHandler, blockedHandler
 func InitWebServer(statsHandler, blockedHandler http.HandlerFunc) {
 	// API 路由
-	http.HandleFunc("/api/stats", statsHandler)
-	http.HandleFunc("/api/blocked", blockedHandler)
+	http.HandleFunc("/api/stats", withNoStore(statsHandler))
+	http.HandleFunc("/api/blocked", withNoStore(blockedHandler))
 	http.HandleFunc("/api/config", handleConfig)
 
 	// 静态文件服务（前端页面）
 	http.HandleFunc("/", handleStatic)
 }
 
+func withNoStore(next http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Cache-Control", "no-store")
+		next(w, r)
+	}
+}
+
 func handleConfig(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Cache-Control", "no-store")
+
 	switch r.Method {
 	case "GET":
 		// 返回当前配置文件内容
@@ -60,7 +86,7 @@ func handleConfig(w http.ResponseWriter, r *http.Request) {
 
 	case "POST":
 		// 保存新配置
-		body, err := io.ReadAll(r.Body)
+		body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, 1<<20))
 		if err != nil {
 			http.Error(w, err.Error(), 400)
 			return
@@ -93,24 +119,77 @@ func handleConfig(w http.ResponseWriter, r *http.Request) {
 }
 
 func handleStatic(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet && r.Method != http.MethodHead {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	staticAssetsOnce.Do(initStaticAssets)
+
 	path := r.URL.Path
 	if path == "/" {
 		path = "/index.html"
 	}
 
-	data, err := WebFS.ReadFile("web/dist" + path)
-	if err != nil {
+	asset, ok := staticAssets[path]
+	if !ok {
 		// 返回 index.html 支持前端路由
-		data, err = WebFS.ReadFile("web/dist/index.html")
-		if err != nil {
-			http.Error(w, "Not found", 404)
-			return
-		}
+		asset = staticAssets["/index.html"]
+	}
+	if asset == nil {
+		http.Error(w, "Not found", http.StatusNotFound)
+		return
 	}
 
-	// 根据扩展名设置 Content-Type
-	w.Header().Set("Content-Type", getContentType(path))
-	w.Write(data)
+	w.Header().Set("Content-Type", asset.ContentType)
+	w.Header().Set("ETag", asset.ETag)
+	w.Header().Set("X-Content-Type-Options", "nosniff")
+
+	if asset.IsHTML {
+		w.Header().Set("Cache-Control", "no-cache, max-age=0")
+	} else {
+		w.Header().Set("Cache-Control", "public, max-age=86400")
+	}
+
+	if r.Header.Get("If-None-Match") == asset.ETag {
+		w.WriteHeader(http.StatusNotModified)
+		return
+	}
+
+	if r.Method == http.MethodHead {
+		w.WriteHeader(http.StatusOK)
+		return
+	}
+
+	_, _ = w.Write(asset.Data)
+}
+
+func initStaticAssets() {
+	staticAssets = make(map[string]*staticAsset)
+	_ = fs.WalkDir(WebFS, "web/dist", func(filePath string, d fs.DirEntry, err error) error {
+		if err != nil || d.IsDir() {
+			return err
+		}
+
+		data, readErr := WebFS.ReadFile(filePath)
+		if readErr != nil {
+			return readErr
+		}
+
+		assetPath := strings.TrimPrefix(filePath, "web/dist")
+		staticAssets[assetPath] = &staticAsset{
+			Data:        data,
+			ContentType: getContentType(assetPath),
+			ETag:        buildETag(data),
+			IsHTML:      strings.HasSuffix(assetPath, ".html"),
+		}
+		return nil
+	})
+}
+
+func buildETag(data []byte) string {
+	sum := sha1.Sum(data)
+	return `"` + hex.EncodeToString(sum[:]) + `"`
 }
 
 func getContentType(path string) string {

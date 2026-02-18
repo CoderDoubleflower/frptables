@@ -102,7 +102,15 @@ func Init(file string) (err error) {
 	// 监听本地端口，接受reload指令
 	go func() {
 		http.HandleFunc("/reload", reload)
-		err := http.ListenAndServe(url, nil) // 设置监听的端口
+		srv := &http.Server{
+			Addr:              url,
+			Handler:           http.DefaultServeMux,
+			ReadHeaderTimeout: 5 * time.Second,
+			ReadTimeout:       10 * time.Second,
+			WriteTimeout:      15 * time.Second,
+			IdleTimeout:       60 * time.Second,
+		}
+		err := srv.ListenAndServe() // 设置监听的端口
 		if err != nil {
 			log.Fatal("ListenAndServe: ", err)
 		}

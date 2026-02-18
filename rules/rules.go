@@ -25,7 +25,6 @@ package rules
 import (
 	"encoding/json"
 	"fmt"
-	"io"
 	"net/http"
 	"sync"
 	"time"
@@ -37,6 +36,35 @@ import (
 
 // 拦截IP-端口，因为验证ip有时间差，攻击频率太高会导致防火墙重复添加。
 var RefuseMap = make(map[string]bool)
+var refuseMutex = sync.RWMutex{}
+
+const apiCacheTTL = 2 * time.Second
+
+type responseCache struct {
+	mu       sync.RWMutex
+	payload  []byte
+	expireAt time.Time
+}
+
+func (c *responseCache) Get() ([]byte, bool) {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	if len(c.payload) == 0 || time.Now().After(c.expireAt) {
+		return nil, false
+	}
+	return c.payload, true
+}
+
+func (c *responseCache) Set(payload []byte, ttl time.Duration) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.payload = payload
+	c.expireAt = time.Now().Add(ttl)
+}
+
+var statsResponseCache responseCache
+var blockedResponseCache responseCache
+var ipLookupClient = &http.Client{Timeout: 4 * time.Second}
 
 func Init() {
 	rateInit()
@@ -71,6 +99,8 @@ func GetBlockedList() []*BlockedInfo {
 
 // IsIPBlocked 检查 IP 是否已被拦截
 func IsIPBlocked(ip string) bool {
+	refuseMutex.RLock()
+	defer refuseMutex.RUnlock()
 	if _, ok := RefuseMap[ip]; ok {
 		return true
 	}
@@ -120,52 +150,17 @@ func checkAllow(ip string, port int) bool {
 func CheckRules(ip string, port int) (refuse bool, desc string, p, count int) {
 	info := getIpHistory(ip)
 	if !info.HasInfo {
-		// 通过 https://ip.zengwu.com.cn?ip= 接口获取ip归属地信息
-		// 详细文档可查看： https://zengwu.com.cn/archives/ip
-		// 这里也可以切换成自己的ip查询
-		client := &http.Client{}
-		req, _ := http.NewRequest("GET", "https://ip.zengwu.com.cn?ip="+ip, nil)
-		resp, err := client.Do(req)
-		if err != nil {
-			// 读取网页数据错误
-			return
-		}
-
-		defer resp.Body.Close()
-		body, err := io.ReadAll(resp.Body)
-		if err != nil || resp.StatusCode != 200 {
-			// 读取网页数据错误
-			return
-		}
-
-		var jsonInfo struct {
-			Result   int32  `json:"result,omitempty"`   // 状态
-			Country  string `json:"country,omitempty"`  // 国家
-			Province string `json:"province,omitempty"` // 省
-			City     string `json:"city,omitempty"`     // 城市
-			Isp      string `json:"isp,omitempty"`      // 运营商
-			Query    string `json:"query,omitempty"`    // 查询IP
-			Time     int64  `json:"time,omitempty"`     // 查询时间
-		}
-
-		err = json.Unmarshal(body, &jsonInfo)
-		if err != nil {
-			return
-		}
-
-		info.HasInfo = true
-
-		if err != nil || jsonInfo.Result != 0 {
-			// 地址获取不成功，跳过
+		country, region, city, ok := lookupIPLocation(ip)
+		if !ok {
 			refuse = false
 			p = -1
 			return
 		}
 
-		info.Country = jsonInfo.Country
-		info.Region = jsonInfo.Province
-		info.City = jsonInfo.City
-		// 获取IP信息结束
+		info.HasInfo = true
+		info.Country = country
+		info.Region = region
+		info.City = city
 	}
 	info.Add()
 
@@ -221,8 +216,11 @@ func CheckRules(ip string, port int) (refuse bool, desc string, p, count int) {
 
 // 添加防火墙，拒绝访问
 func refuse(ip, name string, port int) {
+	refuseMutex.Lock()
+
 	// 检测IP是否有添加记录
 	if _, ok := RefuseMap[ip]; ok {
+		refuseMutex.Unlock()
 		// ip添加
 		return
 	}
@@ -231,6 +229,7 @@ func refuse(ip, name string, port int) {
 	if port != -1 {
 		key := fmt.Sprintf("%s:%d", ip, port)
 		if _, ok := RefuseMap[key]; ok {
+			refuseMutex.Unlock()
 			return
 		}
 
@@ -238,6 +237,7 @@ func refuse(ip, name string, port int) {
 	} else {
 		RefuseMap[ip] = true
 	}
+	refuseMutex.Unlock()
 
 	cmd := ""
 	switch config.Cfg.TablesType {
@@ -313,19 +313,35 @@ type IPStatsResponse struct {
 
 // HandleStats 处理 /api/stats 请求
 func HandleStats(w http.ResponseWriter, r *http.Request) {
-	w.Header().Set("Content-Type", "application/json")
+	if r.Method != http.MethodGet {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json; charset=utf-8")
 
+	if payload, ok := statsResponseCache.Get(); ok {
+		_, _ = w.Write(payload)
+		return
+	}
+
+	payload, err := buildStatsPayload()
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	statsResponseCache.Set(payload, apiCacheTTL)
+	_, _ = w.Write(payload)
+}
+
+func buildStatsPayload() ([]byte, error) {
 	// 获取活跃的 IP 访问记录
 	stats := GetAllIPStats()
 	response := make([]IPStatsResponse, 0, len(stats))
 
 	// 用于去重
-	addedIPs := make(map[string]bool)
+	addedIPs := make(map[string]struct{}, len(stats))
 
 	for _, h := range stats {
-		// 确保有地理坐标
-		EnrichHistoryWithGeo(h)
-
 		response = append(response, IPStatsResponse{
 			IP:        h.Ip,
 			Country:   h.Country,
@@ -337,13 +353,13 @@ func HandleStats(w http.ResponseWriter, r *http.Request) {
 			LastTime:  h.LastTime,
 			IsBlocked: IsIPBlocked(h.Ip),
 		})
-		addedIPs[h.Ip] = true
+		addedIPs[h.Ip] = struct{}{}
 	}
 
 	// 合并被拦截的 IP（如果尚未包含）
 	blocked := GetBlockedList()
 	for _, b := range blocked {
-		if addedIPs[b.IP] {
+		if _, ok := addedIPs[b.IP]; ok {
 			continue // 已存在，跳过
 		}
 		response = append(response, IPStatsResponse{
@@ -359,11 +375,27 @@ func HandleStats(w http.ResponseWriter, r *http.Request) {
 		})
 	}
 
-	json.NewEncoder(w).Encode(response)
+	return json.Marshal(response)
 }
 
 // HandleBlocked 处理 /api/blocked 请求
 func HandleBlocked(w http.ResponseWriter, r *http.Request) {
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(GetBlockedList())
+	if r.Method != http.MethodGet {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json; charset=utf-8")
+
+	if payload, ok := blockedResponseCache.Get(); ok {
+		_, _ = w.Write(payload)
+		return
+	}
+
+	payload, err := json.Marshal(GetBlockedList())
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	blockedResponseCache.Set(payload, apiCacheTTL)
+	_, _ = w.Write(payload)
 }
